@@ -1,1 +1,1 @@
-# multimodal_chm_regression
+# multimodal-dl-canopy
