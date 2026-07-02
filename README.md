@@ -1,1 +1,1 @@
-# multimodal-dl-canopy
+# multimodal-canopy
