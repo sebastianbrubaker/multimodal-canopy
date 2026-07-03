@@ -2,3 +2,4 @@ venv/
 experimental.ipynb
 data/
 *.qgz
+notebooks/00_scratch_work.ipynb
