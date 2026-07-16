@@ -4,3 +4,4 @@ data/
 *.qgz
 notebooks/00_scratch_work.ipynb
 .vscode
+__pycache__
