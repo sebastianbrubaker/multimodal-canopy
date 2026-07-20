@@ -1,100 +1,226 @@
 import sys
 import os
-from datetime import datetime, timedelta
-import pyproj
-import xarray as xr
-import rioxarray as rxr
-import ee
+import warnings
 from tqdm import tqdm
+from datetime import datetime
+from datetime import timedelta
+import ee
+import geemap
+import pyproj
+import rioxarray as rxr
+import xarray as xr
 
-# Appends sibling directory to path list to use gee_utils.py
-parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sibling_dir = os.path.join(parent_dir, "utils")
-sys.path.append(sibling_dir)
+# Suppress the backend time-start warning
+warnings.filterwarnings(
+    "ignore", message="Unable to retrieve 'system:time_start'"
+)
 
-from gee_utils import get_roi, fetch_s1, fetch_s2, fetch_alos
-
-
-DELTA_WEEKS = 8
 CLD_PERCENT = 5
+DELTA_WEEKS = 8
+S1_RESOLUTION = 10  #m
+
+
+def get_roi(ds, box_buf_dist, dest_epsg) -> ee.Geometry:
+    """
+    Gets the 2D bounds of a local raster dataset, applies a buffer,
+    and returns it as a WGS84 Earth Engine Rectangle.
+    """
+    bounds = ds.rio.bounds()
+    xmin, ymin, xmax, ymax = bounds
+    xmin -= box_buf_dist
+    ymin -= box_buf_dist
+    xmax += box_buf_dist
+    ymax += box_buf_dist
+    bounds = (xmin, ymin, xmax, ymax)
+
+    transformer = pyproj.Transformer.from_crs(
+        dest_epsg, "EPSG:4326", always_xy=True
+    )
+    xmin_wgs, ymin_wgs = transformer.transform(bounds[0], bounds[1])
+    xmax_wgs, ymax_wgs = transformer.transform(bounds[2], bounds[3])
+
+    return ee.Geometry.Rectangle([xmin_wgs, ymin_wgs, xmax_wgs, ymax_wgs])
+
+
+def process_s2(image):
+    """
+    Masks clouds and snow from Sentinel-2 imagery using the provided scene
+    classification layer and a probability threshold, then returns spectral
+    bands scaled to percent reflectance.
+    """
+    mask_cld = image.select("MSK_CLDPRB").lt(2)
+    mask_snw = image.select("MSK_SNWPRB").lt(2)
+    bands = image.select([
+        "B2",
+        "B3",
+        "B4",
+        "B5",
+        "B6",
+        "B7",
+        "B8",
+        "B11",
+        "B12",
+    ])
+    return bands.updateMask(mask_cld).updateMask(mask_snw).divide(10000)
+
+
+def fetch_s2_by_resolution(roi, dest_epsg, date_start, date_end, cld_percentage, bands, resolution):
+    """
+    Fetches Sentinel-2 data and creates median composite for specified ROI.
+    """
+    s2_col = (
+        ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+        .filterBounds(roi)
+        .filterDate(date_start, date_end)
+        .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", cld_percentage))
+    ).sort("CLOUDY_PIXEL_PERCENTAGE")
+
+    s2_col_processed = s2_col.map(process_s2)
+    s2_img_med = s2_col_processed.median().clip(roi)
+
+    # Select only the target bands for this resolution tier
+    s2_img_selected = s2_img_med.select(bands)
+
+    # Force projection based on the first band of the requested group
+    native_projection = s2_col.first().select(bands[0]).projection()
+    s2_img_projected = s2_img_selected.setDefaultProjection(native_projection)
+
+    # Return wrapped in an ImageCollection to prevent xee warnings
+    return geemap.ee_to_xarray(
+        dataset=ee.ImageCollection(s2_img_projected),
+        geometry=roi,
+        scale=resolution,
+        crs=dest_epsg,
+    )
+
+
+def fetch_s1(roi, dest_epsg, date_start, date_end):
+    """
+    Fetches dual-pol ascending C-Band SAR from the Sentinel-1 GRD collection
+    and creates median composite. 
+    """
+    s1_asc_col = (
+        ee.ImageCollection("COPERNICUS/S1_GRD")
+        .filterBounds(roi)
+        .filterDate(date_start, date_end)
+        .filter(ee.Filter.eq("instrumentMode", "IW"))
+        .filter(ee.Filter.eq("orbitProperties_pass", "ASCENDING"))
+        .filter(ee.Filter.listContains("transmitterReceiverPolarisation", "VV"))
+        .filter(ee.Filter.listContains("transmitterReceiverPolarisation", "VH"))
+    ).sort("system:time_start")
+
+    s1_med = s1_asc_col.select(["VV", "VH"]).median().clip(roi)
+
+    return geemap.ee_to_xarray(
+        dataset=ee.ImageCollection(s1_med),
+        geometry=roi,
+        scale=S1_RESOLUTION,
+        crs=dest_epsg,
+    )
+
 
 def fetch_tile(in_fp, out_dir):
-    """
-    """
     # Extract collection date from BC LiDAR-named file 
-    start_date_str = in_fp.strip().split("_")[-2].split(".")[0]
-    start_date_obj = datetime.strptime(start_date_str, "%Y%m%d")
-    end_date_obj = start_date_obj + timedelta(weeks=DELTA_WEEKS)
-    start_date_str = str(start_date_obj.date())
-    end_date_str = str(end_date_obj.date())
-    year = start_date_obj.year
+    date_start_str = in_fp.strip().split("_")[-2].split(".")[0]
+    date_start_obj = datetime.strptime(date_start_str, "%Y%m%d")
+    date_end_obj = date_start_obj + timedelta(weeks=DELTA_WEEKS)
+    date_start_str = str(date_start_obj.date())
+    date_end_str = str(date_end_obj.date())
 
-    # Get bounds
+    # Get target bounds and projection
     bounds_ds = rxr.open_rasterio(in_fp)
     dest_epsg = f"EPSG:{pyproj.CRS(bounds_ds.rio.crs).to_2d().to_epsg()}"
     roi = get_roi(bounds_ds, 100, dest_epsg)
 
-    # Fetch data
-    s2_ds = fetch_s2(roi, dest_epsg, start_date_str, end_date_str, CLD_PERCENT)
-    s1_ds = fetch_s1(roi, dest_epsg, start_date_str, end_date_str)
-    alos_ds = fetch_alos(roi, dest_epsg, year)
+    # Fetch datasets at native resolutions
+    bands_10m = ["B2", "B3", "B4", "B8"]
+    bands_20m = ["B5", "B6", "B7", "B11", "B12"]
 
-    # Stack into data cube
+    s2_10m_ds = fetch_s2_by_resolution(roi, dest_epsg, date_start_str, date_end_str, CLD_PERCENT, bands_10m, 10)
+    s2_20m_ds = fetch_s2_by_resolution(roi, dest_epsg, date_start_str, date_end_str, CLD_PERCENT, bands_20m, 20)
+    s1_ds = fetch_s1(roi, dest_epsg, date_start_str, date_end_str)
+
+    # Upsample 20m bands locally using Cubic Spline 
+    anchor_layer = s2_10m_ds["B2"]
+
+    s2_b2 = s2_10m_ds["B2"]
+    s2_b3 = s2_10m_ds["B3"]
+    s2_b4 = s2_10m_ds["B4"]
+    s2_b8 = s2_10m_ds["B8"]
+    s1_vv = s1_ds["VV"]
+    s1_vh = s1_ds["VH"]
+
+    s2_b5_up = s2_20m_ds["B5"].rio.reproject_match(anchor_layer, resampling=3)
+    s2_b6_up = s2_20m_ds["B6"].rio.reproject_match(anchor_layer, resampling=3)
+    s2_b7_up = s2_20m_ds["B7"].rio.reproject_match(anchor_layer, resampling=3)
+    s2_b11_up = s2_20m_ds["B11"].rio.reproject_match(anchor_layer, resampling=3)
+    s2_b12_up = s2_20m_ds["B12"].rio.reproject_match(anchor_layer, resampling=3)
+
+    # Concatenate the aligned arrays along the band dimension
     features = xr.concat(
         [
-            s2_ds["B2"],
-            s2_ds["B3"],
-            s2_ds["B4"],
-            s2_ds["B8"],
-            s1_ds["VV"],
-            s1_ds["VH"],
-            alos_ds["HH"],
-            alos_ds["HV"],
+            s2_b2,
+            s2_b3,
+            s2_b4,
+            s2_b8,
+            s2_b5_up,
+            s2_b6_up,
+            s2_b7_up,
+            s2_b11_up,
+            s2_b12_up,
+            s1_vv,
+            s1_vh,
         ],
-        dim="band"
+        dim="band",
     )
 
-    # Assign band names
+    # Name the bands
     features = features.assign_coords(
         band=[
             "B2",
             "B3",
             "B4",
             "B8",
-            "s1_VV",
-            "s1_VH",
-            "alos_HH",
-            "alos_HV",
+            "B5",
+            "B6",
+            "B7",
+            "B11",
+            "B12",
+            "C_VV",
+            "C_VH",
         ]
     )
 
+    # Safely drop time dimension
     if features.sizes["time"] == 1:
-        features = features.squeeze("time", drop=True)     # flatten time dimension
+        features = features.squeeze("time", drop=True)
 
-    # Update metadata
+    # Clean up metadata attributes
     features.name = "Features"
     features.attrs.pop("id", None)
     features.attrs.pop("long_name", None)
     features.attrs["description"] = "Multimodal feature stack."
-    features.attrs["date_start"] = start_date_str
-    features.attrs["date_end"] = end_date_str
-    features.attrs["source"] = "Google Earth Engine"
-    
-    # Extract BCGS tile for name write to tif
+    features.attrs["date_start"] = date_start_str
+    features.attrs["date_end"] = date_end_str
+    features.attrs["source"] = (
+        "Google Earth Engine"
+    )
+
+    # Extract BCGS tile for name and write to GeoTiff
     bcgs_tile = os.path.basename(in_fp)[0:16]
-    out_fp = os.path.join(out_dir, f"{bcgs_tile}.tif")
-    features.rio.to_raster(out_fp)
+    dst_fp = os.path.join(out_dir, f"{bcgs_tile}.tif")
+    features.rio.to_raster(dst_fp)
+
 
 def main():
+    # Get and parse CLI arguments
     args = sys.argv[1:]
     in_dir = args[0]
     out_dir = args[1]
-    
-    # Initilaize GEE
+
+    # Initialize GEE
     ee.Authenticate()
-    ee.Initialize(
-        project="multimodal-regression"
-    )
+    ee.Initialize(project="multimodal-regression")
 
     for f in tqdm(os.listdir(in_dir)):
         if not f.endswith((".tif", ".geotif")): continue    # skip non-tif files

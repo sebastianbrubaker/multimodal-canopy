@@ -41,7 +41,7 @@ def process_tile(in_fp, out_dir):
 
     # Read the filtered points into PyForestScan and delete the temp
     try:
-        arrays = read_lidar(temp_laz, epsg_string, hag=True)    # NOTE: HAG filter is runtime bottleneck
+        arrays = read_lidar(temp_laz, epsg_string, hag=True)    # NOTE: Delauney Triangle HAG filter runtime bottleneck
     finally:
         if os.path.exists(temp_laz):
             os.remove(temp_laz)
