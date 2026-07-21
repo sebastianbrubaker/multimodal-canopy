@@ -222,13 +222,11 @@ def main():
     ee.Authenticate()
     ee.Initialize(project="multimodal-regression")
 
-    for f in tqdm(os.listdir(in_dir)):
-        if not f.endswith((".tif", ".geotif")): continue    # skip non-tif files
+    # Process
+    tif_fps = [os.path.join(in_dir, f) for f in os.listdir(in_dir) if f.endswith(".tif")]
+    for fp in tqdm(tif_fps):
+        fetch_tile(fp, out_dir)
 
-        # Construct file path
-        in_fp = os.path.join(in_dir, f)
-
-        fetch_tile(in_fp, out_dir)
 
 
 if __name__ == "__main__":

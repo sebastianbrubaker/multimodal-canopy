@@ -2,6 +2,7 @@ import sys
 import os
 from tqdm import tqdm
 import numpy as np
+import re
 import laspy
 import rasterio
 from rasterio.windows import Window
@@ -11,16 +12,40 @@ from pyforestscan.filters import filter_hag
 from pyforestscan.calculate import assign_voxels, calculate_pad, \
     calculate_pai, calculate_chm, calculate_canopy_cover
 
+
+
 TRIM = 3    # metres trimmed = TRIM * 10
 
+
+
 def strip_fields(arr, fields=("X", "Y", "Z", "HeightAboveGround")):
+    """
+    Strips all fields not contained in fields tuple parameter.
+    """
     dtype = np.dtype([(f, arr.dtype[f]) for f in fields])
     out = np.empty(arr.shape, dtype=dtype)
     for f in fields:
         out[f] = arr[f]
     return out
 
+
+def extract_date_from_filename(filename):
+    """
+    Extracts an 8-digit date string (YYYYMMDD) from LAZ filename. 
+    Raises an error if not found.
+    """
+    match = re.search(r"(\d{8})", filename)
+    if match:
+        return match.group(1)
+    else:
+        raise ValueError(f"Could not parse YYYYMMDD date from filename: {filename}")
+    
+
 def process_tile(in_fp, out_dir):
+    filename = os.path.basename(in_fp)
+    acq_date = extract_date_from_filename(filename)
+    bcgs_tile = filename[0:16]
+
     # Extract SRS and filter out noise classes 7 and 18
     with laspy.open(in_fp) as las_file:
         try:
@@ -41,7 +66,8 @@ def process_tile(in_fp, out_dir):
 
     # Read the filtered points into PyForestScan and delete the temp
     try:
-        arrays = read_lidar(temp_laz, epsg_string, hag=True)    # NOTE: Delauney Triangle HAG filter runtime bottleneck
+        # NOTE: Delauney Triangle HAG filter is a runtime bottleneck
+        arrays = read_lidar(temp_laz, epsg_string, hag=True)        
     finally:
         if os.path.exists(temp_laz):
             os.remove(temp_laz)
@@ -76,7 +102,7 @@ def process_tile(in_fp, out_dir):
     cover = calculate_canopy_cover(
         pad, 
         voxel_height=voxel_resolution[-1],
-        min_height=2.0,
+        min_height=2.0, # m
         k=0.5   # forest structure assumption
     )   
     cover_10m = block_reduce(cover, block_size=(10,10), func=np.nanmean)
@@ -100,62 +126,46 @@ def process_tile(in_fp, out_dir):
         width, height
     )       # (west, south, east, north, width, height)
 
-    # Define the rasterio profile
+    # Create metadata
     out_meta = {
-        'driver': 'GTiff',
-        'height': height,
-        'width': width,
-        'count': bands,
-        'dtype': metrics_stack.dtype.name,
-        'crs': epsg_string,
-        'transform': transform,
-        'nodata': nodata_value,
-        'compress': "deflate"
+        "driver": "GTiff",
+        "height": height,
+        "width": width,
+        "count": bands,
+        "dtype": metrics_stack.dtype.name,
+        "crs": epsg_string,
+        "transform": transform,
+        "nodata": nodata_value,
+        "compress": "deflate"
     }
 
-    # Construct file path and write to tiff
-    out_f = os.path.basename(in_fp).replace(".laz", ".tif")
-    out_fp = os.path.join(out_dir, out_f)
-    os.makedirs(out_dir, exist_ok=True)     # ensure the destination directory exists
+    out_fp = os.path.join(out_dir, f"{bcgs_tile}.tif")
+    os.makedirs(out_dir, exist_ok=True)
 
-    with rasterio.open(out_fp, 'w', **out_meta) as dst:
-        dst.write(metrics_stack)
-        dst.set_band_description(1, 'CHM_10m')
-        dst.set_band_description(2, 'Rugosity_10m')
-        dst.set_band_description(3, 'PAI_10m')
-        dst.set_band_description(4, 'Canopy_Cover_10m')
+    # Slice numpy array to clip bounds
+    t = TRIM
+    trimmed_metrics = metrics_stack[:, t:-t, t:-t] if t > 0 else metrics_stack
+    
+    # Update metadata parameters for the trimmed dimensions
+    new_height, new_width = trimmed_metrics.shape[1], trimmed_metrics.shape[2]
+    window = Window(t, t, new_width, new_height)
+    new_transform = rasterio.windows.transform(window, transform)
+    
+    out_meta.update({
+        "height": new_height,
+        "width": new_width,
+        "transform": new_transform
+    })
 
+    # Write to tif
+    with rasterio.open(out_fp, "w", **out_meta) as dst:
+        dst.write(trimmed_metrics)
+        dst.set_band_description(1, "CHM_10m")
+        dst.set_band_description(2, "Rugosity_10m")
+        dst.set_band_description(3, "PAI_10m")
+        dst.set_band_description(4, "Canopy_Cover_10m")
+        dst.update_tags(acquisition_date=acq_date)
 
-    # Trim edges to drop some NaNs
-    trim_top    = TRIM
-    trim_bottom = TRIM
-    trim_left   = TRIM
-    trim_right  = TRIM
-
-    with rasterio.open(out_fp) as src:
-        # Calculate new dimensions
-        new_width = src.width - (trim_left + trim_right)
-        new_height = src.height - (trim_top + trim_bottom)
-
-        # Create the pixel window (col_off, row_off, width, height)
-        window = Window(trim_left, trim_top, new_width, new_height)
-
-        # Automatically calculate the correct spatial transform for the new boundaries
-        new_transform = rasterio.windows.transform(window, src.transform)
-
-        # Copy profile and update metadata
-        profile = src.profile.copy()
-        profile.update(
-            {
-                "height": new_height,
-                "width": new_width,
-                "transform": new_transform,
-            }
-        )
-
-        # Write the trimmed raster
-        with rasterio.open(out_fp, "w", **profile) as dst:
-            dst.write(src.read(window=window))
 
 
 def main():
@@ -164,15 +174,13 @@ def main():
     in_dir = args[0]
     out_dir = args[1]
 
-    for f in tqdm(os.listdir(in_dir)):
-        if not f.endswith((".las", ".laz")): continue   # skip non-las files
+    # Construct a list of .laz files in the directory
+    laz_fps = [os.path.join(in_dir, f) for f in os.listdir(in_dir) if f.endswith(".laz")]
+    for fp in tqdm(laz_fps):
+        process_tile(fp, out_dir)
 
-        # Construct full path
-        in_fp = os.path.join(in_dir, f)
-
-        # Process tile
-        process_tile(in_fp, out_dir)
 
 
 if __name__ == "__main__":
-    main() 
+    main()
+
