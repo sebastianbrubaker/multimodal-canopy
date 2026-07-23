@@ -27,23 +27,19 @@ def align_and_write_np(metrics_dir, gee_dir, out_dir):
             continue
             
         # Read data
-        metrics_ds = rxr.open_rasterio(metric_fp)
-        gee_ds = rxr.open_rasterio(gee_path)
+        metrics_ds = rxr.open_rasterio(metric_fp, masked=True)  # NoData -> NaNs on read
+        gee_ds = rxr.open_rasterio(gee_path, masked=True)
         
         # Align feature to target
-        gee_aligned = gee_ds.rio.reproject_match(metrics_ds, resampling=Resampling.nearest)
-        
-        # Fill GeoSpatial NoData with NaNs
-        target_array = metrics_ds.values
-        feature_array = gee_aligned.values
-        target_array[target_array == metrics_ds.rio.nodata] = np.nan
+        gee_aligned = gee_ds.rio.reproject_match(metrics_ds, resampling=Resampling.bilinear)
         
         # Write as numpy binaries
         features_fp = os.path.join(out_dir, "features", f"{bcgs_tile}.npy")
         targets_fp = os.path.join(out_dir, "targets", f"{bcgs_tile}.npy")  
-        np.save(features_fp, feature_array.astype(np.float32))
-        np.save(targets_fp, target_array.astype(np.float32))
-        print(f"Successfully processed and aligned tile: {bcgs_tile}. Shape: {feature_array.shape[1:]}")
+        np.save(features_fp, gee_aligned.values.astype(np.float32))
+        np.save(targets_fp, metrics_ds.values.astype(np.float32))
+        print(f"Successfully processed and aligned tile: {bcgs_tile}. Shape: {gee_aligned.values.shape[1:]}")
+
 
 
 def main():

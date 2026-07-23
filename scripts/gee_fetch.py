@@ -7,6 +7,7 @@ from datetime import timedelta
 import ee
 import geemap
 import pyproj
+from rasterio.enums import Resampling
 import rioxarray as rxr
 import xarray as xr
 
@@ -120,6 +121,11 @@ def fetch_s1(roi, dest_epsg, date_start, date_end):
 
 
 def fetch_tile(in_fp, out_dir):
+    """
+    Fetches Sentinel-1 and Sentinel-2 data from GEE for a given ROI,
+    computes a pixel-wise median over a time range, upsamples all bands 
+    to a 10m resolution locally, and writes to disk as GeoTiff.  
+    """
     # Extract collection date from BC LiDAR-named file 
     date_start_str = in_fp.strip().split("_")[-2].split(".")[0]
     date_start_obj = datetime.strptime(date_start_str, "%Y%m%d")
@@ -140,7 +146,7 @@ def fetch_tile(in_fp, out_dir):
     s2_20m_ds = fetch_s2_by_resolution(roi, dest_epsg, date_start_str, date_end_str, CLD_PERCENT, bands_20m, 20)
     s1_ds = fetch_s1(roi, dest_epsg, date_start_str, date_end_str)
 
-    # Upsample 20m bands locally using Cubic Spline 
+    # Upsample 20m bands
     anchor_layer = s2_10m_ds["B2"]
 
     s2_b2 = s2_10m_ds["B2"]
@@ -150,11 +156,11 @@ def fetch_tile(in_fp, out_dir):
     s1_vv = s1_ds["VV"]
     s1_vh = s1_ds["VH"]
 
-    s2_b5_up = s2_20m_ds["B5"].rio.reproject_match(anchor_layer, resampling=3)
-    s2_b6_up = s2_20m_ds["B6"].rio.reproject_match(anchor_layer, resampling=3)
-    s2_b7_up = s2_20m_ds["B7"].rio.reproject_match(anchor_layer, resampling=3)
-    s2_b11_up = s2_20m_ds["B11"].rio.reproject_match(anchor_layer, resampling=3)
-    s2_b12_up = s2_20m_ds["B12"].rio.reproject_match(anchor_layer, resampling=3)
+    s2_b5_up = s2_20m_ds["B5"].rio.reproject_match(anchor_layer, resampling=Resampling.bilinear)
+    s2_b6_up = s2_20m_ds["B6"].rio.reproject_match(anchor_layer, resampling=Resampling.bilinear)
+    s2_b7_up = s2_20m_ds["B7"].rio.reproject_match(anchor_layer, resampling=Resampling.bilinear)
+    s2_b11_up = s2_20m_ds["B11"].rio.reproject_match(anchor_layer, resampling=Resampling.bilinear)
+    s2_b12_up = s2_20m_ds["B12"].rio.reproject_match(anchor_layer, resampling=Resampling.bilinear)
 
     # Concatenate the aligned arrays along the band dimension
     features = xr.concat(
@@ -162,10 +168,10 @@ def fetch_tile(in_fp, out_dir):
             s2_b2,
             s2_b3,
             s2_b4,
-            s2_b8,
             s2_b5_up,
             s2_b6_up,
             s2_b7_up,
+            s2_b8,
             s2_b11_up,
             s2_b12_up,
             s1_vv,
@@ -180,10 +186,10 @@ def fetch_tile(in_fp, out_dir):
             "B2",
             "B3",
             "B4",
-            "B8",
             "B5",
             "B6",
             "B7",
+            "B8",
             "B11",
             "B12",
             "C_VV",
