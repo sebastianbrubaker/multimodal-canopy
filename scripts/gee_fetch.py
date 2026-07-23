@@ -18,7 +18,7 @@ warnings.filterwarnings(
 
 CLD_PERCENT = 5
 DELTA_WEEKS = 8
-S1_RESOLUTION = 10  #m
+S1_RESOLUTION = 10  # m
 
 
 def get_roi(ds, box_buf_dist, dest_epsg) -> ee.Geometry:
@@ -126,17 +126,16 @@ def fetch_tile(in_fp, out_dir):
     computes a pixel-wise median over a time range, upsamples all bands 
     to a 10m resolution locally, and writes to disk as GeoTiff.  
     """
-    # Extract collection date from BC LiDAR-named file 
-    date_start_str = in_fp.strip().split("_")[-2].split(".")[0]
+    # Get target bounds projection collection date
+    bounds_ds = rxr.open_rasterio(in_fp)
+    dest_epsg = f"EPSG:{pyproj.CRS(bounds_ds.rio.crs).to_2d().to_epsg()}"
+    roi = get_roi(bounds_ds, 100, dest_epsg)
+
+    date_start_str = str(bounds_ds.attrs["acquisition_date"])
     date_start_obj = datetime.strptime(date_start_str, "%Y%m%d")
     date_end_obj = date_start_obj + timedelta(weeks=DELTA_WEEKS)
     date_start_str = str(date_start_obj.date())
     date_end_str = str(date_end_obj.date())
-
-    # Get target bounds and projection
-    bounds_ds = rxr.open_rasterio(in_fp)
-    dest_epsg = f"EPSG:{pyproj.CRS(bounds_ds.rio.crs).to_2d().to_epsg()}"
-    roi = get_roi(bounds_ds, 100, dest_epsg)
 
     # Fetch datasets at native resolutions
     bands_10m = ["B2", "B3", "B4", "B8"]
@@ -230,6 +229,7 @@ def main():
 
     # Process
     tif_fps = [os.path.join(in_dir, f) for f in os.listdir(in_dir) if f.endswith(".tif")]
+    
     for fp in tqdm(tif_fps):
         fetch_tile(fp, out_dir)
 

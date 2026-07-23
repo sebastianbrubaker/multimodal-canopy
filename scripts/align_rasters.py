@@ -43,8 +43,6 @@ def align_and_write_np(metrics_dir, gee_dir, out_dir):
 
 
 def main():
-    """
-    """
     args = sys.argv[1:]
     metrics_dir = args[0]
     gee_dir = args[1]
