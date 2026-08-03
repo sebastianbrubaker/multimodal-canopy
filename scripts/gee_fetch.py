@@ -231,7 +231,11 @@ def main():
     tif_fps = [os.path.join(in_dir, f) for f in os.listdir(in_dir) if f.endswith(".tif")]
     
     for fp in tqdm(tif_fps):
-        fetch_tile(fp, out_dir)
+        try:
+            fetch_tile(fp, out_dir)
+        except Exception as e:
+            print(f"Failed to retreive GEE data for {fp}: {e}")
+            
 
 
 

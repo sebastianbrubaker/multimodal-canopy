@@ -1,7 +1,6 @@
 import sys
 import os
 import gc
-from tqdm import tqdm
 import numpy as np
 import re
 import laspy
@@ -210,7 +209,7 @@ def main():
     failed_tiles = []
 
     with ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        results = list(tqdm(executor.map(process_func, laz_fps), total=len(laz_fps)))
+        results = list(executor.map(process_func, laz_fps))
 
     for success, fname, err in results:
         if not success:
@@ -226,7 +225,7 @@ def main():
         log_path = os.path.join(out_dir, "data/failed_tiles_log.txt")
         with open(log_path, "w") as f:
             for fname, err in failed_tiles:
-                f.write(f"Tile: {fname}\n{err}\n{'='*50}\n")
+                f.write(f"Tile: {fname}\n{err}\n{'-'*50}\n")
 
 
 
