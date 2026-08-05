@@ -5,16 +5,19 @@ from torch.utils.data import Dataset
 
 
 class CanopyDataset(Dataset):
-    def __init__(self, feature_dir, target_dir):
-        self.feature_paths = sorted([os.path.join(feature_dir, f) for f in os.listdir(feature_dir) if f.endswith(".tif")])
-        self.target_paths = sorted([os.path.join(target_dir, f) for f in os.listdir(target_dir) if f.endswith(".tif")])
-
+    def __init__(self, stack_dir):
+        self.stack_paths = sorted([os.path.join(stack_dir, f) for f in os.listdir(stack_dir) if f.endswith(".npy")])
+        
     def __len__(self):
-        return len(self.feature_paths)
+        return len(self.stack_paths)
 
     def __getitem__(self, idx):
-        x = np.load(self.feature_paths[idx]).astype(np.float32)
-        y = np.load(self.target_paths[idx]).astype(np.float32)
+        # Load in NumPy array
+        arr = np.load(self.stack_paths[idx]).astype(np.float32)
+        # TODO:
+        # Compute valid mask
+
+        # Split into X, Y, val and return as PyTorch Tensors
 
         return (
             torch.from_numpy(x), 
