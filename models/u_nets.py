@@ -32,39 +32,38 @@ class Contract(nn.Module):
         self.pool = nn.MaxPool2d(2, 2)
 
         self.convs = nn.ModuleList()
-        n_in = channel_counts[0] 
-        for n_out in channel_counts[1:]:
+        for i in range(len(channel_counts) - 1):
+            n_in = channel_counts[i]
+            n_out = channel_counts[i+1]
+
             self.convs.append(DoubleConv(n_in, n_out))
-            n_in = n_out
 
 
     def forward(self, x):
         skips = []
-        for i, conv in enumerate(self.convs):
+        for conv in self.convs:
             x = conv(x)
             skips.append(x)    # accumulate hidden features tensors for skip connections
-
-            if i < len(self.convs) - 1: x = self.pool(x)    # pool every layer except the bottom
+            x = self.pool(x)    # pool every layer except the bottom
 
         return x, skips
 
 
 class Expand(nn.Module):
-    def __init__(self, n_encoders, channel_counts=[256, 128, 64, 1]):
+    def __init__(self, n_encoders, channel_counts=[256, 128, 64]):
         super().__init__()
 
         self.upconvs = nn.ModuleList()
         self.convs = nn.ModuleList()
 
-        n_in = channel_counts[0]
-        for n_out in channel_counts[1:]:
-            self.upconvs.append(nn.ConvTranspose2d(n_in, n_out, 2, 2))
+        for i in range(len(channel_counts) - 1):
+            n_in = channel_counts[i]
+            n_out = channel_counts[i+1]
 
-            n_in = n_out + (n_out * n_encoders)    # update for DoubleConv instance
+            self.upconvs.append(nn.ConvTranspose2d(n_in, n_in, 2, 2))
 
-            self.convs.append(DoubleConv(n_in, n_out))
-
-            n_in = n_out    # update for ConvTransposed2d instance
+            total_n_in = n_in + (n_in * n_encoders)    # get n channels after concatenation
+            self.convs.append(DoubleConv(total_n_in, n_out))
 
 
     def forward(self, x, all_encoder_skips):
@@ -82,14 +81,14 @@ class Expand(nn.Module):
 
 
 # =============================================================================
-# U-Net Models
+# U-Net Model(s)
 # =============================================================================
 
 
 
 class DualEncoderUNet(nn.Module):
     def __init__(self, n_sar_channels=2, n_opt_channels=9, n_out_channels=1):
-        super.__init__()
+        super().__init__()
 
         # Define encoding path
         hidden_channels = [64, 128, 256]
@@ -105,8 +104,10 @@ class DualEncoderUNet(nn.Module):
         self.bottleneck_conv = DoubleConv(bottleneck_in, bottleneck_out)
 
         # Define decoding path
-        dec_channel_counts = hidden_channels[::-1] + [n_out_channels]
-        self.dec = Expand(2, dec_channel_counts)
+        self.dec = Expand(2, hidden_channels[::-1])
+
+        # Define final convolution
+        self.final_conv = nn.Conv2d(hidden_channels[0], n_out_channels, 1, 1)
 
 
     def forward(self, sar, opt):
@@ -120,4 +121,4 @@ class DualEncoderUNet(nn.Module):
         # Decoding path
         x = self.dec(bottleneck, [s_skips, o_skips])
 
-        return x
+        return self.final_conv(x)
