@@ -4,6 +4,8 @@ import warnings
 import numpy as np
 from rasterio.enums import Resampling
 import rioxarray as rxr
+from scipy.interpolate import griddata
+from scipy.ndimage import distance_transform_edt
 
 TARGET_H, TARGET_W = 128, 128
 
@@ -71,6 +73,19 @@ def standarize(arr, axis) -> np.ndarray:
     return (arr - mean) / (std + eps)
 
 
+def compute_valid_mask(arr):
+    """
+    Returns a copy of the original array with a binary valid mask 
+    (1: valid, 0: invalid) for a spatially aligned array of shape (C, H, W) and infs filled.
+    """
+    ret_arr = arr.copy()
+    ret_arr[np.isinf(ret_arr)] = np.nan
+    mask_valid = (~np.isnan(ret_arr).any(axis=0)).astype(np.float32)
+
+    return np.concatenate([ret_arr, mask_valid[np.newaxis, :, :]], axis=0)
+
+
+
 def write_np(out_dir: str, stacks: dict[str, np.ndarray]):
     """
     Writes the stacks.values() NumPy arrays as .npy binaries to out_dir using the
@@ -83,6 +98,66 @@ def write_np(out_dir: str, stacks: dict[str, np.ndarray]):
         np.save(dst, arr)
 
 
+def fill_features_bilinear(stack: np.ndarray, num_feature_channels: int = 11) -> np.ndarray:
+    """
+    Performs 2D bilinear spatial interpolation to fill NaNs and Infs on feature channels 
+    (indices 0 to num_feature_channels - 1) of a (C, H, W) array.
+    
+    Leaves target channels (indices num_feature_channels to C - 1) un-interpolated.
+    """
+    out_stack = stack.copy()
+    
+    # Convert Infs in features to NaNs first
+    features = out_stack[:num_feature_channels]
+    features[np.isinf(features)] = np.nan
+    
+    C_feat, H, W = features.shape
+    grid_y, grid_x = np.mgrid[0:H, 0:W]
+    
+    for c in range(C_feat):
+        band = features[c]
+        nan_mask = np.isnan(band)
+        
+        # Skip channel if there are no missing values
+        if not np.any(nan_mask):
+            continue
+            
+        # If the entire channel is missing, default fill to 0.0
+        if np.all(nan_mask):
+            features[c] = 0.0
+            continue
+            
+        # Coordinates of valid pixels
+        valid_coords = np.array(np.nonzero(~nan_mask)).T  # Shape: (N_valid, 2)
+        valid_values = band[~nan_mask]                     # Shape: (N_valid,)
+        
+        # Coordinates of missing pixels to fill
+        missing_coords = (grid_y[nan_mask], grid_x[nan_mask])
+        
+        # Perform 2D Linear (Bilinear on regular grid) Interpolation
+        interpolated = griddata(
+            points=valid_coords,
+            values=valid_values,
+            xi=missing_coords,
+            method='linear'
+        )
+        
+        # Assign interpolated values back to missing positions
+        band[nan_mask] = interpolated
+        
+        # Fallback for boundary NaNs (griddata returns NaN for points outside the convex hull of valid pixels)
+        still_nan = np.isnan(band)
+        if np.any(still_nan):
+            # Nearest valid neighbor via Euclidean Distance Transform
+            indices = distance_transform_edt(still_nan, return_distances=False, return_indices=True)
+            band[still_nan] = band[tuple(indices)][still_nan]
+            
+        features[c] = band
+        
+    out_stack[:num_feature_channels] = features
+    return out_stack
+
+
 def main():
     if len(sys.argv) < 4:
         print("Usage: python process_rasters.py <metrics_dir> <gee_dir> <out_dir>")
@@ -92,7 +167,14 @@ def main():
     gee_dir = sys.argv[2]
     out_dir = sys.argv[3]
 
-    write_np(out_dir, align_rasters(metrics_dir, gee_dir))
+    stacks_dict = align_rasters(metrics_dir, gee_dir)
+
+    # Compute valid masks in place
+    for name, stack in stacks_dict.items():
+        stack_filled = fill_features_bilinear(stack, num_feature_channels=11)
+        stacks_dict[name] = compute_valid_mask(stack_filled)
+
+    write_np(out_dir, stacks_dict)
 
 
 if __name__ == "__main__":

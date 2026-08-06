@@ -50,7 +50,7 @@ class Contract(nn.Module):
 
 
 class Expand(nn.Module):
-    def __init__(self, n_encoders, channel_counts=[256, 128, 64]):
+    def __init__(self, n_encoders, channel_counts=[256, 128, 64, 64]):
         super().__init__()
 
         self.upconvs = nn.ModuleList()
@@ -60,9 +60,9 @@ class Expand(nn.Module):
             n_in = channel_counts[i]
             n_out = channel_counts[i+1]
 
-            self.upconvs.append(nn.ConvTranspose2d(n_in, n_in, 2, 2))
+            self.upconvs.append(nn.ConvTranspose2d(n_in, n_out, 2, 2))
 
-            total_n_in = n_in + (n_in * n_encoders)    # get n channels after concatenation
+            total_n_in = n_out + (n_in * n_encoders)    # get n channels after concatenation
             self.convs.append(DoubleConv(total_n_in, n_out))
 
 
@@ -92,11 +92,11 @@ class DualEncoderUNet(nn.Module):
 
         # Define encoding path
         hidden_channels = [64, 128, 256]
-        sar_channel_counts = [n_sar_channels] + hidden_channels
-        opt_channel_counts = [n_opt_channels] + hidden_channels
+        sar_enc_channel_counts = [n_sar_channels] + hidden_channels
+        opt_enc_channel_counts = [n_opt_channels] + hidden_channels
 
-        self.sar_enc = Contract(sar_channel_counts)
-        self.opt_enc = Contract(opt_channel_counts)
+        self.sar_enc = Contract(sar_enc_channel_counts)
+        self.opt_enc = Contract(opt_enc_channel_counts)
 
         # Define bottleneck
         bottleneck_in = hidden_channels[-1] * 2
@@ -104,10 +104,11 @@ class DualEncoderUNet(nn.Module):
         self.bottleneck_conv = DoubleConv(bottleneck_in, bottleneck_out)
 
         # Define decoding path
-        self.dec = Expand(2, hidden_channels[::-1])
+        dec_channel_counts = hidden_channels[::-1] + [64]
+        self.dec = Expand(2, dec_channel_counts)
 
         # Define final convolution
-        self.final_conv = nn.Conv2d(hidden_channels[0], n_out_channels, 1, 1)
+        self.final_conv = nn.Conv2d(dec_channel_counts[-1], n_out_channels, 1, 1)
 
 
     def forward(self, sar, opt):
@@ -120,5 +121,6 @@ class DualEncoderUNet(nn.Module):
 
         # Decoding path
         x = self.dec(bottleneck, [s_skips, o_skips])
+        x = self.final_conv(x)
 
-        return self.final_conv(x)
+        return x
