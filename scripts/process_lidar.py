@@ -33,7 +33,7 @@ def strip_fields(arr, fields=("X", "Y", "Z", "HeightAboveGround")):
 
 def extract_date_from_filename(filename):
     """
-    Extracts an 8-digit date string (YYYYMMDD) from LAZ filename. 
+    Extracts an 8-digit date string (YYYYMMDD) from BC LiDAR filename. 
     Raises an error if not found.
     """
     match = re.search(r"(\d{8})", filename)

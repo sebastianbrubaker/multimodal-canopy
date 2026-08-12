@@ -2,6 +2,7 @@ import sys
 import os
 import warnings
 from tqdm import tqdm
+import time
 from datetime import datetime
 from datetime import timedelta
 import ee
@@ -10,6 +11,7 @@ import pyproj
 from rasterio.enums import Resampling
 import rioxarray as rxr
 import xarray as xr
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Suppress the backend time-start warning
 warnings.filterwarnings(
@@ -105,7 +107,7 @@ def fetch_s1(roi, dest_epsg, date_start, date_end):
         .filterBounds(roi)
         .filterDate(date_start, date_end)
         .filter(ee.Filter.eq("instrumentMode", "IW"))
-        .filter(ee.Filter.eq("orbitProperties_pass", "ASCENDING"))
+        # .filter(ee.Filter.eq("orbitProperties_pass", "ASCENDING"))
         .filter(ee.Filter.listContains("transmitterReceiverPolarisation", "VV"))
         .filter(ee.Filter.listContains("transmitterReceiverPolarisation", "VH"))
     ).sort("system:time_start")
@@ -126,6 +128,12 @@ def fetch_tile(in_fp, out_dir):
     computes a pixel-wise median over a time range, upsamples all bands 
     to a 10m resolution locally, and writes to disk as GeoTiff.  
     """
+    bcgs_tile = os.path.basename(in_fp)[0:16]
+    dst_fp = os.path.join(out_dir, f"{bcgs_tile}.tif")
+
+    if os.path.exists(dst_fp):
+        return
+    
     # Get target bounds projection collection date
     bounds_ds = rxr.open_rasterio(in_fp)
     dest_epsg = f"EPSG:{pyproj.CRS(bounds_ds.rio.crs).to_2d().to_epsg()}"
@@ -217,26 +225,234 @@ def fetch_tile(in_fp, out_dir):
     features.rio.to_raster(dst_fp)
 
 
+# def main():
+#     # Get and parse CLI arguments
+#     args = sys.argv[1:]
+#     in_dir = args[0]
+#     out_dir = args[1]
+
+#     # Initialize GEE
+#     ee.Authenticate()
+#     ee.Initialize(project="multimodal-regression")
+
+#     # Process
+#     tif_fps = [os.path.join(in_dir, f) for f in os.listdir(in_dir) if f.endswith(".tif")]
+    
+#     for fp in tqdm(tif_fps):
+#         try:
+#             fetch_tile(fp, out_dir)
+#         except Exception as e:
+#             print(f"Failed to retreive GEE data for {fp}: {e}")
+            
+
+
+
+# if __name__ == "__main__":
+#     main()
+
+
+# ChatGPT multithread implementation
+
+# ---------------------------------------------------------------------------
+# Thread worker
+# ---------------------------------------------------------------------------
+
+def process_tile(fp, out_dir, max_retries=3):
+    """
+    Process one tile with retry logic.
+
+    Returns:
+        (fp, status, error)
+
+    status is one of:
+        "success"
+        "skipped"
+        "failed"
+    """
+
+    # Determine expected output path
+    bcgs_tile = os.path.basename(fp)[0:16]
+    dst_fp = os.path.join(out_dir, f"{bcgs_tile}.tif")
+
+    # Skip tiles that have already been successfully downloaded
+    if os.path.exists(dst_fp):
+        return fp, "skipped", None
+
+    # Retry transient failures
+    for attempt in range(max_retries):
+
+        try:
+            fetch_tile(fp, out_dir)
+            return fp, "success", None
+
+        except Exception as e:
+
+            # Last attempt failed
+            if attempt == max_retries - 1:
+                return fp, "failed", e
+
+            # Exponential backoff:
+            # attempt 0 -> 1 sec
+            # attempt 1 -> 2 sec
+            # attempt 2 -> 4 sec
+            wait = 2 ** attempt
+
+            time.sleep(wait)
+
+    # Should never reach here
+    return fp, "failed", RuntimeError("Unknown failure")
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
 def main():
-    # Get and parse CLI arguments
+
+    # -----------------------------------------------------------------------
+    # Parse command-line arguments
+    # -----------------------------------------------------------------------
+
     args = sys.argv[1:]
+
+    if len(args) < 2:
+        print(
+            "Usage: python gee_fetch.py "
+            "<input_dir> <output_dir>"
+        )
+        sys.exit(1)
+
     in_dir = args[0]
     out_dir = args[1]
 
-    # Initialize GEE
+    os.makedirs(out_dir, exist_ok=True)
+
+    # -----------------------------------------------------------------------
+    # Initialize Earth Engine once
+    # -----------------------------------------------------------------------
+
     ee.Authenticate()
     ee.Initialize(project="multimodal-regression")
 
-    # Process
-    tif_fps = [os.path.join(in_dir, f) for f in os.listdir(in_dir) if f.endswith(".tif")]
-    
-    for fp in tqdm(tif_fps):
-        try:
-            fetch_tile(fp, out_dir)
-        except Exception as e:
-            print(f"Failed to retreive GEE data for {fp}: {e}")
-            
+    # -----------------------------------------------------------------------
+    # Find input tiles
+    # -----------------------------------------------------------------------
 
+    tif_fps = sorted(
+        os.path.join(in_dir, f)
+        for f in os.listdir(in_dir)
+        if f.endswith(".tif")
+    )
+
+    if not tif_fps:
+        print(f"No GeoTIFFs found in {in_dir}")
+        return
+
+    # -----------------------------------------------------------------------
+    # Thread configuration
+    # -----------------------------------------------------------------------
+
+    # Start conservatively.
+    #
+    # Increase to 6 or 8 after confirming that 4 workers
+    # behaves reliably.
+    max_workers = 4
+
+    print(f"Found {len(tif_fps)} input tiles.")
+    print(f"Using {max_workers} worker threads.")
+    print(f"Output directory: {out_dir}")
+
+    # -----------------------------------------------------------------------
+    # Submit jobs
+    # -----------------------------------------------------------------------
+
+    failures = []
+    successful = 0
+    skipped = 0
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+
+        futures = {
+            executor.submit(
+                process_tile,
+                fp,
+                out_dir
+            ): fp
+            for fp in tif_fps
+        }
+
+        # -------------------------------------------------------------------
+        # Collect results as they finish
+        # -------------------------------------------------------------------
+
+        with tqdm(
+            total=len(futures),
+            desc="Fetching tiles",
+            unit="tile"
+        ) as pbar:
+
+            for future in as_completed(futures):
+
+                fp = futures[future]
+
+                try:
+                    fp, status, error = future.result()
+
+                except Exception as e:
+                    # This catches an unexpected exception outside
+                    # process_tile's normal error handling.
+                    status = "failed"
+                    error = e
+
+                # -----------------------------------------------------------
+                # Handle result
+                # -----------------------------------------------------------
+
+                if status == "success":
+                    successful += 1
+
+                elif status == "skipped":
+                    skipped += 1
+
+                elif status == "failed":
+                    failures.append((fp, error))
+
+                    print(
+                        f"\nFAILED: "
+                        f"{os.path.basename(fp)}\n"
+                        f"    {error}"
+                    )
+
+                pbar.update(1)
+
+    # -----------------------------------------------------------------------
+    # Summary
+    # -----------------------------------------------------------------------
+
+    print("\n" + "=" * 70)
+    print("DOWNLOAD COMPLETE")
+    print("=" * 70)
+
+    print(f"Total tiles:       {len(tif_fps)}")
+    print(f"Downloaded:        {successful}")
+    print(f"Already existed:   {skipped}")
+    print(f"Failed:            {len(failures)}")
+
+    # -----------------------------------------------------------------------
+    # List failures
+    # -----------------------------------------------------------------------
+
+    if failures:
+
+        print("\nFailed tiles:")
+        print("-" * 70)
+
+        for fp, error in failures:
+            print(f"{os.path.basename(fp)}")
+            print(f"    {error}")
+
+    else:
+        print("\nNo failures.")
 
 
 if __name__ == "__main__":
