@@ -1,6 +1,7 @@
 import sys
 import os
 import re
+import numpy as np
 import rioxarray as rxr
 from rasterio.enums import Resampling
 from tqdm.auto import tqdm
@@ -57,7 +58,7 @@ def compute_chms(dsm_dir, dtm_dir, chm_dir):
         # Update attributes and write
         chm_10m.attrs["acquisition_date"] = acq_date
         dst = os.path.join(chm_dir, f"{tile_id}_CHM_10m.tif")
-        chm_10m.rio.to_raster(dst, driver="GTiff", compress="deflate")
+        chm_10m.rio.to_raster(dst, driver="GTiff", compress="deflate", nodata=np.nan)
 
 
 def main():

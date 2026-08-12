@@ -1,13 +1,18 @@
 import sys
 import os
 import warnings
+from tqdm.auto import tqdm
 import numpy as np
+import rasterio
+from rasterio.fill import fillnodata
 from rasterio.enums import Resampling
 import rioxarray as rxr
 from scipy.interpolate import griddata
 from scipy.ndimage import distance_transform_edt
 
+
 TARGET_H, TARGET_W = 128, 128
+
 
 def align_rasters(metrics_dir, gee_dir) -> dict[str, np.ndarray]:
     """
@@ -18,7 +23,7 @@ def align_rasters(metrics_dir, gee_dir) -> dict[str, np.ndarray]:
     stacks = {}
 
     # Iterate directories and align stacks
-    for metric_fp in metric_fps:
+    for metric_fp in tqdm(metric_fps, desc="Aligning rasters."):
         bcgs_tile = os.path.splitext(os.path.basename(metric_fp))[0]
         
         gee_path = os.path.join(gee_dir, f"{bcgs_tile}.tif")
@@ -47,7 +52,7 @@ def align_rasters(metrics_dir, gee_dir) -> dict[str, np.ndarray]:
             gee_ds.close()
             continue
             
-        # Crop down to exact global (128, 128) window starting at top-left min(x), min(y)
+        # Crop to window starting at top-left min(x), min(y)
         targets_cropped = metrics_ds.values[:, :TARGET_H, :TARGET_W].astype(np.float32)
         features_cropped = gee_aligned.values[:, :TARGET_H, :TARGET_W].astype(np.float32)
 
@@ -93,9 +98,25 @@ def write_np(out_dir: str, stacks: dict[str, np.ndarray]):
     """
     os.makedirs(out_dir, exist_ok=True)
     # Iterate stacks and write to file
-    for name, arr in stacks.items():
+    for name, arr in tqdm(stacks.items(), desc="Writing .npy files"):
         dst = os.path.join(out_dir, f"{name}.npy")
         np.save(dst, arr)
+
+def fill_nodata(in_dir):
+    """
+    Iterates a directory of single band .tif files and fills NoData values in place.
+    """
+    fps = [os.path.join(in_dir, f) for f in os.listdir(in_dir) if f.endswith(".tif")]
+    for fp in fps:
+        with rasterio.open(fp) as src:
+            profile = src.profile
+            band = src.read(1)
+            mask = src.dataset_mask() 
+            
+            filled_band = fillnodata(image=band, mask=mask, max_search_distance=100)
+
+            with rasterio.open(fp, "w", **profile) as dst:
+                dst.write(filled_band, 1)
 
 
 def fill_features_bilinear(stack: np.ndarray, num_feature_channels: int = 11) -> np.ndarray:
@@ -169,13 +190,12 @@ def main():
 
     stacks_dict = align_rasters(metrics_dir, gee_dir)
 
-    # Compute valid masks in place
-    for name, stack in stacks_dict.items():
-        stack_filled = fill_features_bilinear(stack, num_feature_channels=11)
-        stacks_dict[name] = compute_valid_mask(stack_filled)
+    # Compute fill NaNs
+    for name, stack in tqdm(stacks_dict.items(), desc="Filling NoData"):
+        stacks_dict[name] = fill_features_bilinear(stack, num_feature_channels=11)
 
     write_np(out_dir, stacks_dict)
 
-
+ 
 if __name__ == "__main__":
     main()
