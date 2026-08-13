@@ -24,7 +24,7 @@ class CanopyDataset(Dataset):
 
         # Compute valid mask (valid: 1, invalid: 0) then fill NaNs
         valid = np.where(np.isnan(y), 0, 1).astype(np.float32)
-        y = np.nan_to_num(y, nan=0.0)
+        y = np.nan_to_num(y, nan=0.0)   # 0.0 as BC LiDAR water-masks 
 
         return (
             torch.from_numpy(X), 

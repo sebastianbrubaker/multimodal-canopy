@@ -3,5 +3,6 @@ experimental.ipynb
 data/
 *.qgz
 notebooks/00_scratch_work.ipynb
+notebooks/00_temp.ipynb
 .vscode
 __pycache__

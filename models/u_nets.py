@@ -124,3 +124,34 @@ class DualEncoderUNet(nn.Module):
         x = self.final_conv(x)
 
         return x
+
+
+
+class SingleEncoderUNet(nn.Module):
+    def __init__(self, n_in_channels=9, n_out_channels=1):
+        super().__init__()
+
+        # Define encoding path
+        hidden_channels = [64, 128, 256]
+        enc_channel_counts = [n_in_channels] + hidden_channels
+
+        self.enc = Contract(enc_channel_counts)
+
+        # Define decoding path
+        dec_channel_counts = hidden_channels[::-1] + [64]
+        
+        self.dec = Expand(1, dec_channel_counts)
+
+        # Define final convolution
+        self.final_conv = nn.Conv2d(dec_channel_counts[-1], n_out_channels, 1, 1)
+
+
+    def forward(self, x):
+        # Encoding path
+        x, x_skips = self.enc(x)
+
+        # Decoding path
+        x = self.dec(x, x_skips)
+        x = self.final_conv(x)
+
+        return x
