@@ -151,7 +151,7 @@ class SingleEncoderUNet(nn.Module):
         x, x_skips = self.enc(x)
 
         # Decoding path
-        x = self.dec(x, x_skips)
+        x = self.dec(x, [x_skips])
         x = self.final_conv(x)
 
         return x
