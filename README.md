@@ -166,7 +166,7 @@ A multimodal U-Net with separate encoders for:
 
 The encoded representations are fused at the bottleneck and passed through a shared decoder. This design allows each sensor family to learn independent low-level representations before multimodal feature fusion.
 
-![Dual-encoder U-Net Computational Graph](/mnt/c/Users/sebas/Documents/projects/multimodal-canopy/models/graphs/dual_encoder_unet.png)
+![Dual-encoder U-Net Computational Graph](./models/graphs/dual_encoder_unet.png)
 
 ## Installation
 
