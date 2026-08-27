@@ -157,6 +157,9 @@ A standard U-Net that accepts one feature group, such as:
 - Optical features only
 - SAR features only
 
+![Single-encoder U-Net Computational Graph](./models/graphs/single_encoder_unet.png)
+
+
 ### `DualEncoderUNet`
 
 A multimodal U-Net with separate encoders for:
