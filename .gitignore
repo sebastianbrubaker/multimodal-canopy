@@ -4,5 +4,7 @@ data/
 *.qgz
 notebooks/00_scratch_work.ipynb
 notebooks/00_temp.ipynb
+notebooks/00_demo.ipynb
+readme_draft.md
 .vscode
 __pycache__
