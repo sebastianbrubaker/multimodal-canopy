@@ -1,6 +1,6 @@
 # Multimodal Canopy
 
-A geospatial deep learning pipeline for estimating forest canopy structure from optical imagery, radar, and airborne LiDAR.
+A geospatial deep learning pipeline for estimating forest canopy structure from optical and radar data.
 
 ## Overview
 
