@@ -11,9 +11,9 @@ A geospatial deep learning pipeline for estimating forest canopy structure from 
 - ALOS PALSAR L-band SAR
 - British Columbia airborne LiDAR
 
-The project transforms heterogeneous geospatial data into spatially aligned feature stacks, then trains convolutional neural networks to predict LiDAR-derived canopy metrics.
+The pipeline transforms heterogeneous geospatial data into spatially aligned feature stacks, then trains convolutional neural networks to predict LiDAR-derived canopy metrics.
 
-The primary modeling task is dense, pixel-level canopy height estimation using custome U-Net architectures.
+The modeling task is dense image regression for canopy height, using custome U-Net architectures.
 
 ## Pipeline
 
